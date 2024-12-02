@@ -4,7 +4,7 @@
 Author: Hmily
 GitHub: https://github.com/ihmily
 Date: 2023-07-15 23:15:00
-Update: 2024-11-16 04:07:16
+Update: 2024-11-30 18:46:16
 Copyright (c) 2023-2024 by Hmily, All Rights Reserved.
 Function: Get live stream data.
 """
@@ -414,7 +414,13 @@ def get_kuaishou_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: 
     result.update({"anchor_name": anchor_name})
 
     if play_list['liveStream'].get("playUrls"):
-        play_url_list = play_list['liveStream']['playUrls'][0]['adaptationSet']['representation']
+        if 'h264' in play_list['liveStream']['playUrls']:
+            if 'adaptationSet' not in play_list['liveStream']['playUrls']['h264']:
+                return result
+            play_url_list = play_list['liveStream']['playUrls']['h264']['adaptationSet']['representation']
+        else:
+            # TODO: Old version which not working at 20241128, could be removed if not working confirmed
+            play_url_list = play_list['liveStream']['playUrls'][0]['adaptationSet']['representation']
         result.update({"flv_url_list": play_url_list, "is_live": True})
 
     return result
@@ -809,10 +815,7 @@ def get_xhs_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: Option
     if 'xhslink.com' in url:
         url = get_req(url, proxy_addr=proxy_addr, headers=headers, redirect_url=True)
 
-    result = {
-        "anchor_name": '',
-        "is_live": False,
-    }
+    result = {"anchor_name": '', "is_live": False}
     flv_url = ''
     room_id = re.search('/livestream/(.*?)(?=/|\\?|$)', url)
     if room_id:
@@ -823,11 +826,8 @@ def get_xhs_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: Option
         json_data = json.loads(json_str)
         anchor_name = json_data['data']['host_info']['nickname']
         live_title = json_data['data']['room']['name']
-        result["anchor_name"] = anchor_name
-        result['title'] = live_title
         flv_url = f'http://live-play.xhscdn.com/live/{room_id}.flv'
-        result['flv_url'] = flv_url
-        result['record_url'] = flv_url
+        result |= {"anchor_name": anchor_name, "title": live_title, "flv_url": flv_url, 'record_url': flv_url}
 
     user_id = re.search('/user/profile/(.*?)(?=/|\\?|$)', url)
     user_id = user_id.group(1) if user_id else get_params(url, 'host_id')
@@ -841,16 +841,13 @@ def get_xhs_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: Option
         json_data = json.loads(json_str)
         if json_data["success"]:
             if json_data['data']:
-                result['is_live'] = True
                 live_link = json_data['data'][0]['live_link']
-                result['anchor_name'] = get_params(live_link, "host_nickname")
+                anchor_name = get_params(live_link, "host_nickname")
                 if flv_url and get_response_status(flv_url, proxy_addr=proxy_addr, headers=headers):
+                    result['is_live'] = True
                     return result
                 flv_url = get_params(live_link, "flvUrl")
-                result['flv_url'] = flv_url
-                result['record_url'] = flv_url
-            else:
-                result['is_live'] = False
+                result |= {"anchor_name": anchor_name, "is_live": True, "flv_url": flv_url, 'record_url': flv_url}
         else:
             print(f"xhs {json_data['msg']}")
     return result
@@ -885,18 +882,14 @@ def get_bigo_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: Optio
     json_data = json.loads(json_str)
     anchor_name = json_data['data']['nick_name']
     live_status = json_data['data']['alive']
-    result = {
-        "anchor_name": anchor_name,
-        "is_live": False,
-    }
+    result = {"anchor_name": anchor_name, "is_live": False}
 
     if live_status == 1:
         live_title = json_data['data']['roomTopic']
-        result['title'] = live_title
         m3u8_url = json_data['data']['hls_src']
         result['m3u8_url'] = m3u8_url
-        result['is_live'] = True
         result['record_url'] = m3u8_url
+        result |= {"title": live_title, "is_live": True, "m3u8_url": m3u8_url, 'record_url': m3u8_url}
     elif result['anchor_name'] == '':
         html_str = get_req(url=f'https://www.bigo.tv/cn/{room_id}', proxy_addr=proxy_addr, headers=headers)
         result['anchor_name'] = re.search('<title>欢迎来到(.*?)的直播间</title>', html_str, re.DOTALL).group(1)
@@ -920,16 +913,11 @@ def get_blued_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: Opti
     json_data = json.loads(json_str)
     anchor_name = json_data['userInfo']['name']
     live_status = json_data['userInfo']['onLive']
-    result = {
-        "anchor_name": anchor_name,
-        "is_live": False,
-    }
+    result = {"anchor_name": anchor_name, "is_live": False}
 
     if live_status:
         m3u8_url = "http:" + json_data['liveInfo']['liveUrl']
-        result['m3u8_url'] = m3u8_url
-        result['is_live'] = True
-        result['record_url'] = m3u8_url
+        result |= {"is_live": True, "m3u8_url": m3u8_url, 'record_url': m3u8_url}
     return result
 
 
@@ -1091,10 +1079,8 @@ def get_sooplive_stream_data(
             anchor_name = f"{anchor_name}-{json_data['data']['bj_id']}"
     else:
         anchor_name = ''
-    result = {
-        "anchor_name": '' if anchor_name is None else anchor_name,
-        "is_live": False,
-    }
+
+    result = {"anchor_name": anchor_name or '' ,"is_live": False}
 
     def get_url_list(m3u8: str) -> List[str]:
         resp = get_req(url=m3u8, proxy_addr=proxy_addr, headers=headers, abroad=True)
@@ -1116,17 +1102,19 @@ def get_sooplive_stream_data(
                 print("sooplive platform login successful! Starting to fetch live streaming data...")
                 return cookie
 
-        def fetch_data(cookie) -> dict:
+        def fetch_data(cookie, _result) -> dict:
             aid_token = get_sooplive_tk(url, rtype='aid', proxy_addr=proxy_addr, cookies=cookie)
             _anchor_name, _broad_no = get_sooplive_tk(url, rtype='info', proxy_addr=proxy_addr, cookies=cookie)
             _view_url = get_sooplive_cdn_url(_broad_no, proxy_addr=proxy_addr)['view_url']
             _m3u8_url = _view_url + '?aid=' + aid_token
-            result['anchor_name'] = _anchor_name
-            result['m3u8_url'] = _m3u8_url
-            result['is_live'] = True
-            result['play_url_list'] = get_url_list(_m3u8_url)
-            result['new_cookies'] = cookie
-            return result
+            _result |= {
+                "anchor_name": _anchor_name,
+                "is_live": True,
+                "m3u8_url": _m3u8_url,
+                'play_url_list': get_url_list(_m3u8_url),
+                'new_cookies': cookie
+            }
+            return _result
 
         if json_data['data']['code'] == -3001:
             print("sooplive live stream failed to retrieve, the live stream just ended.")
@@ -1138,12 +1126,12 @@ def get_sooplive_stream_data(
                   "please ensure it is configured.")
             new_cookie = handle_login()
             if new_cookie and len(new_cookie) > 0:
-                return fetch_data(new_cookie)
+                return fetch_data(new_cookie, result)
             raise RuntimeError("sooplive login failed, please check if the account and password are correct")
 
         elif json_data['data']['code'] == -3004:
             if cookies and len(cookies) > 0:
-                return fetch_data(cookies)
+                return fetch_data(cookies, result)
             else:
                 raise RuntimeError("sooplive login failed, please check if the account and password are correct")
         elif json_data['data']['code'] == -6001:
@@ -1155,9 +1143,7 @@ def get_sooplive_stream_data(
         hls_authentication_key = json_data['data']['hls_authentication_key']
         view_url = get_sooplive_cdn_url(broad_no, proxy_addr=proxy_addr)['view_url']
         m3u8_url = view_url + '?aid=' + hls_authentication_key
-        result['m3u8_url'] = m3u8_url
-        result['is_live'] = True
-        result['play_url_list'] = get_url_list(m3u8_url)
+        result |= {'is_live': True, 'm3u8_url': m3u8_url, 'play_url_list': get_url_list(m3u8_url)}
     result['new_cookies'] = None
     return result
 
@@ -1184,10 +1170,12 @@ def get_netease_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: O
     if 'quickplay' not in live_data:
         result["anchor_name"] = room_data['nickname']
     else:
-        result["anchor_name"] = live_data['nickname']
-        result["is_live"] = True
-        result["title"] = live_data['title']
-        result["stream_list"] = live_data['quickplay']
+        result |= {
+            'anchor_name': live_data['nickname'],
+            'is_live': True,
+            'title': live_data['title'],
+            'stream_list': live_data['quickplay']
+        }
     return result
 
 
@@ -1213,10 +1201,12 @@ def get_qiandurebo_stream_data(url: str, proxy_addr: OptionalStr = None, cookies
         play_url = re.findall('"play_url": "(.*?)",\r\n', data)
 
         if len(play_url) > 0 and 'common-text-center" style="display:block' not in html_str:
-            result['anchor_name'] = anchor_name[0]
-            result['flv_url'] = play_url[0]
-            result['is_live'] = True
-            result['record_url'] = play_url[0]
+            result |= {
+                'anchor_name': anchor_name[0],
+                'is_live': True,
+                'flv_url': play_url[0],
+                'record_url': play_url[0]
+            }
     return result
 
 
@@ -1247,7 +1237,6 @@ def get_pandatv_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: O
     }
 
     result = {"anchor_name": "", "is_live": False}
-
     json_str = get_req('https://api.pandalive.co.kr/v1/member/bj',
                        proxy_addr=proxy_addr, headers=headers, data=data, abroad=True)
     json_data = json.loads(json_str)
@@ -1266,9 +1255,8 @@ def get_pandatv_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: O
             else:
                 raise RuntimeError(json_data['errorData']['code'], json_data['message'])
         play_url = json_data['PlayList']['hls'][0]['url']
-        result['m3u8_url'] = play_url
-        result['is_live'] = True
-        result['play_url_list'] = get_play_url_list(m3u8=play_url, proxy=proxy_addr, header=headers, abroad=True)
+        play_url_list = get_play_url_list(m3u8=play_url, proxy=proxy_addr, header=headers, abroad=True)
+        result |= {'is_live': True, 'm3u8_url': play_url, 'play_url_list': play_url_list}
     return result
 
 
@@ -1293,20 +1281,14 @@ def get_maoerfm_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: Op
     live_status = False
     if 'room' in json_data['info']:
         live_status = json_data['info']['room']['status']['broadcasting']
-    result = {
-        "anchor_name": anchor_name,
-        "is_live": live_status,
-    }
 
+    result = {"anchor_name": anchor_name, "is_live": live_status}
     if live_status:
         stream_list = json_data['info']['room']['channel']
         m3u8_url = stream_list['hls_pull_url']
         flv_url = stream_list['flv_pull_url']
-        result['title'] = json_data['info']['room']['name']
-        result['m3u8_url'] = m3u8_url
-        result['flv_url'] = flv_url
-        result['is_live'] = True
-        result['record_url'] = m3u8_url
+        title = json_data['info']['room']['name']
+        result |= {'is_live': True, 'title': title, 'm3u8_url': m3u8_url, 'flv_url': flv_url, 'record_url': m3u8_url}
     return result
 
 
@@ -1592,10 +1574,12 @@ def get_looklive_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: O
         else:
             play_url_list = json_data['data']['roomInfo']['liveUrl']
             live_title = json_data['data']['roomInfo']['title']
-            result["title"] = live_title
-            result["flv_url"] = play_url_list['httpPullUrl']
-            result["m3u8_url"] = play_url_list['hlsPullUrl']
-            result["record_url"] = play_url_list['hlsPullUrl']
+            result |= {
+                "title": live_title,
+                "flv_url": play_url_list['httpPullUrl'],
+                "m3u8_url": play_url_list['hlsPullUrl'],
+                "record_url": play_url_list['hlsPullUrl'],
+            }
     return result
 
 
@@ -1796,12 +1780,10 @@ def get_popkontv_stream_url(
             json_str = fetch_data(headers, partner_code)
             json_data = json.loads(json_str)
             m3u8_url = json_data['data']['castHlsUrl']
-            result["m3u8_url"] = m3u8_url
-            result["record_url"] = m3u8_url
+            result |= {"m3u8_url": m3u8_url, "record_url": m3u8_url}
         elif json_data['statusCd'] == "L0000":
             m3u8_url = json_data['data']['castHlsUrl']
-            result["m3u8_url"] = m3u8_url
-            result["record_url"] = m3u8_url
+            result |= {"m3u8_url": m3u8_url, "record_url": m3u8_url}
         else:
             raise RuntimeError("Failed to retrieve live stream source,", status_msg)
     result['new_token'] = new_token
@@ -1882,7 +1864,6 @@ def get_twitcasting_stream_url(
     }
 
     anchor_id = url.split('/')[3]
-
     if cookies:
         headers['Cookie'] = cookies
 
@@ -1922,10 +1903,7 @@ def get_twitcasting_stream_url(
     result["anchor_name"] = anchor_name
     if live_status == 'true':
         play_url = f'https://twitcasting.tv/{anchor_id}/metastream.m3u8/?video=1&mode=source'
-        result['m3u8_url'] = play_url
-        result['record_url'] = play_url
-        result['is_live'] = True
-        result['title'] = live_title
+        result |= {'title': live_title, 'is_live': True, "m3u8_url": play_url, "record_url": play_url}
     result['new_cookies'] = new_cookie
     return result
 
@@ -1969,10 +1947,7 @@ def get_baidu_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: Opt
     key = list(json_data['data'].keys())[0]
     data = json_data['data'][key]
     anchor_name = data['host']['name']
-    result = {
-        "anchor_name": anchor_name,
-        "is_live": False,
-    }
+    result = {"anchor_name": anchor_name, "is_live": False}
     if data['status'] == "0":
         result["is_live"] = True
         live_title = data['video']['title']
@@ -1989,9 +1964,7 @@ def get_baidu_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: Opt
                 url_list.append(prefix + i['urls'][0]['hls'].rsplit('?', maxsplit=1)[0].rsplit('/', maxsplit=1)[1])
 
         if url_list:
-            result['play_url_list'] = url_list
-            result['title'] = live_title
-            result['is_live'] = True
+            result |= {"is_live": True, "title": live_title, 'play_url_list': url_list}
     return result
 
 
@@ -2018,20 +1991,15 @@ def get_weibo_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: Opt
                 room_id = i['page_info']['object_id']
                 break
 
-    result = {
-        "anchor_name": '',
-        "is_live": False,
-    }
+    result = {"anchor_name": '', "is_live": False}
     if room_id:
         app_api = f'https://weibo.com/l/pc/anchor/live?live_id={room_id}'
         # app_api = f'https://weibo.com/l/!/2/wblive/room/show_pc_live.json?live_id={room_id}'
         json_str = get_req(url=app_api, proxy_addr=proxy_addr, headers=headers)
         json_data = json.loads(json_str)
-
         anchor_name = json_data['data']['user_info']['name']
         result["anchor_name"] = anchor_name
         live_status = json_data['data']['item']['status']
-
         if live_status == 1:
             result["is_live"] = True
             live_title = json_data['data']['item']['desc']
@@ -2043,7 +2011,6 @@ def get_weibo_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: Opt
                 {"m3u8_url": m3u8_url, "flv_url": flv_url},
                 {"m3u8_url": m3u8_url.split('_')[0] + '.m3u8', "flv_url": flv_url.split('_')[0] + '.flv'}
             ]
-
     return result
 
 
@@ -2064,14 +2031,10 @@ def get_kugou_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: Opti
         room_id = url.split('?')[0].rsplit('/', maxsplit=1)[1]
 
     app_api = f'https://service2.fanxing.kugou.com/roomcen/room/web/cdn/getEnterRoomInfo?roomId={room_id}'
-
     json_str = get_req(url=app_api, proxy_addr=proxy_addr, headers=headers)
     json_data = json.loads(json_str)
     anchor_name = json_data['data']['normalRoomInfo']['nickName']
-    result = {
-        "anchor_name": anchor_name,
-        "is_live": False,
-    }
+    result = {"anchor_name": anchor_name, "is_live": False}
     if not anchor_name:
         raise RuntimeError(
             "Music channel live rooms are not supported for recording, please switch to a different live room."
@@ -2091,15 +2054,12 @@ def get_kugou_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: Opti
             '_': str(int(time.time() * 1000)),
         }
         api = f'https://fx1.service.kugou.com/video/pc/live/pull/mutiline/streamaddr?{urllib.parse.urlencode(params)}'
-
         json_str2 = get_req(api, proxy_addr=proxy_addr, headers=headers)
         json_data2 = json.loads(json_str2)
         stream_data = json_data2['data']['lines']
         if stream_data:
-            result["is_live"] = True
-            result['flv_url'] = stream_data[-1]['streamProfiles'][0]['httpsFlv'][0]
-            result['record_url'] = result['flv_url']
-
+            flv_url = stream_data[-1]['streamProfiles'][0]['httpsFlv'][0]
+            result |= {"is_live": True, "flv_url": flv_url, "record_url": flv_url}
     return result
 
 
@@ -2202,9 +2162,7 @@ def get_twitchtv_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: 
         access_key = urllib.parse.urlencode(params)
         m3u8_url = f'https://usher.ttvnw.net/api/channel/hls/{uid}.m3u8?{access_key}'
         play_url_list = get_play_url_list(m3u8=m3u8_url, proxy=proxy_addr, header=headers, abroad=True)
-        result['m3u8_url'] = m3u8_url
-        result['play_url_list'] = play_url_list
-
+        result |= {'m3u8_url': m3u8_url, 'play_url_list': play_url_list}
     return result
 
 
@@ -2238,17 +2196,16 @@ def get_liveme_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: Opt
     stream_data = json_data['data']['video_info']
     anchor_name = stream_data['uname']
     live_status = stream_data['status']
-    result = {
-        "anchor_name": anchor_name,
-        "is_live": False,
-    }
+    result = {"anchor_name": anchor_name, "is_live": False}
     if live_status == "0":
-        result["is_live"] = True
         m3u8_url = stream_data['hlsvideosource']
         flv_url = stream_data['videosource']
-        result['m3u8_url'] = m3u8_url
-        result['flv_url'] = flv_url
-        result['record_url'] = m3u8_url if m3u8_url else flv_url
+        result |= {
+            'is_live': True,
+            'm3u8_url': m3u8_url,
+            'flv_url': flv_url,
+            'record_url': m3u8_url or flv_url
+        }
     return result
 
 
@@ -2386,9 +2343,11 @@ def get_huajiao_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: Op
             api = f'https://live.huajiao.com/live/substream?{urllib.parse.urlencode(params)}'
             json_str = get_req(url=api, proxy_addr=proxy_addr, headers=headers)
             json_data = json.loads(json_str)
-            result["is_live"] = True
-            result['flv_url'] = json_data['data']['h264_url']
-            result['record_url'] = json_data['data']['h264_url']
+            result |= {
+                'is_live': True,
+                'flv_url': json_data['data']['h264_url'],
+                'record_url': json_data['data']['h264_url'],
+            }
     return result
 
 
@@ -2418,19 +2377,16 @@ def get_liuxing_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: Op
     live_status = room_info["live_stat"]
     result = {"anchor_name": anchor_name, "is_live": False}
     if live_status == 1:
-        result["is_live"] = True
         idx = room_info['idx']
         live_id = room_info['liveId1']
         flv_url = f'https://txpull1.5see.com/live/{idx}/{live_id}.flv'
-        result['flv_url'] = flv_url
-        result['record_url'] = flv_url
+        result |= {'is_live': True, 'flv_url': flv_url, 'record_url': flv_url}
     return result
 
 
 @trace_error_decorator
 def get_showroom_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict:
     headers = {
-        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
         'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0',
     }
@@ -2532,9 +2488,7 @@ def get_acfun_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: Opt
         videoPlayRes = json_data['data']['videoPlayRes']
         play_url_list = json.loads(videoPlayRes)['liveAdaptiveManifest'][0]['adaptationSet']['representation']
         play_url_list = sorted(play_url_list, key=itemgetter('bitrate'), reverse=True)
-        result['play_url_list'] = play_url_list
-        result['title'] = live_title
-
+        result |= {'play_url_list': play_url_list, 'title': live_title}
     return result
 
 
@@ -2575,10 +2529,7 @@ def get_changliao_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: 
         live_id = json_data['data']['roomInfo']['liveID']
         flv_url = f'{flv_domain}/{live_id}.flv'
         m3u8_url = f'{hls_domain}/{live_id}.m3u8'
-        result["is_live"] = True
-        result["m3u8_url"] = m3u8_url
-        result["flv_url"] = flv_url
-        result["record_url"] = flv_url
+        result |= {'is_live': True, 'm3u8_url': m3u8_url, 'flv_url': flv_url, 'record_url': flv_url}
     return result
 
 
@@ -2611,10 +2562,7 @@ def get_yingke_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: Opt
     if live_status == 1:
         m3u8_url = json_data['data']['live_addr'][0]['hls_stream_addr']
         flv_url = json_data['data']['live_addr'][0]['stream_addr']
-        result["is_live"] = True
-        result["m3u8_url"] = m3u8_url
-        result["flv_url"] = flv_url
-        result["record_url"] = m3u8_url
+        result |= {'is_live': True, 'm3u8_url': m3u8_url, 'flv_url': flv_url, 'record_url': m3u8_url}
     return result
 
 
@@ -2656,10 +2604,7 @@ def get_yinbo_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: Opti
         live_id = room_data['liveID']
         flv_url = f'{flv_domain}/{live_id}.flv'
         m3u8_url = f'{hls_domain}/{live_id}.m3u8'
-        result["is_live"] = True
-        result["m3u8_url"] = m3u8_url
-        result["flv_url"] = flv_url
-        result["record_url"] = flv_url
+        result |= {'is_live': True, 'm3u8_url': m3u8_url, 'flv_url': flv_url, 'record_url': flv_url}
     return result
 
 
@@ -2692,11 +2637,13 @@ def get_zhihu_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: Opti
     if live_status == 1:
         live_title = live_data['theme']
         play_url = live_data['drama']['playInfo']
-        result["is_live"] = True
-        result["title"] = live_title
-        result["m3u8_url"] = play_url['hlsUrl']
-        result["flv_url"] = play_url['playUrl']
-        result["record_url"] = play_url['hlsUrl']
+        result |= {
+            'is_live': True,
+            'title': live_title,
+            'm3u8_url': play_url['hlsUrl'],
+            'flv_url': play_url['playUrl'],
+            'record_url': play_url['hlsUrl']
+        }
     return result
 
 
@@ -2724,12 +2671,10 @@ def get_chzzk_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: Opt
     if live_status == 'OPEN':
         play_data = json.loads(live_data['livePlaybackJson'])
         m3u8_url = play_data['media'][0]['path']
-        result["is_live"] = True
-        result["m3u8_url"] = m3u8_url
         m3u8_url_list = get_play_url_list(m3u8_url, proxy=proxy_addr, header=headers, abroad=True)
         prefix = m3u8_url.split('?')[0].rsplit('/', maxsplit=1)[0]
         m3u8_url_list = [prefix + '/' + i for i in m3u8_url_list]
-        result["play_url_list"] = m3u8_url_list
+        result |= {"is_live": True, "m3u8_url": m3u8_url, "play_url_list": m3u8_url_list}
     return result
 
 
@@ -2775,15 +2720,10 @@ def get_haixiu_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: Opt
     stream_data = json_data['data']
     anchor_name = stream_data['nickname']
     live_status = stream_data['live_status']
-    result = {
-        "anchor_name": anchor_name,
-        "is_live": False,
-    }
+    result = {"anchor_name": anchor_name, "is_live": False}
     if live_status == 1:
-        result["is_live"] = True
         flv_url = stream_data['media_url_web']
-        result['flv_url'] = flv_url
-        result['record_url'] = flv_url
+        result |= {'is_live': True, 'flv_url': flv_url, 'record_url': flv_url}
     return result
 
 
@@ -2819,17 +2759,11 @@ def get_vvxqiu_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: Opt
         json_data = json.loads(json_str)
         anchor_name = json_data['data']['memberVO']['memberName']
 
-    result = {
-        "anchor_name": anchor_name,
-        "is_live": False,
-    }
-
+    result = {"anchor_name": anchor_name, "is_live": False}
     m3u8_url = f'https://liveplay-pro.wasaixiu.com/live/1400442770_{room_id}_{room_id[2:]}_single.m3u8'
     resp = get_req(m3u8_url, proxy_addr=proxy_addr, headers=headers)
     if 'Not Found' not in resp:
-        result["is_live"] = True
-        result['m3u8_url'] = m3u8_url
-        result['record_url'] = m3u8_url
+        result |= {'is_live': True, 'm3u8_url': m3u8_url, 'record_url': m3u8_url}
     return result
 
 
@@ -2849,10 +2783,7 @@ def get_17live_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: Opt
     json_str = get_req(api_1, proxy_addr=proxy_addr, headers=headers)
     json_data = json.loads(json_str)
     anchor_name = json_data["displayName"]
-    result = {
-        "anchor_name": anchor_name,
-        "is_live": False,
-    }
+    result = {"anchor_name": anchor_name, "is_live": False}
     json_data = {
         'liveStreamID': room_id,
     }
@@ -2861,10 +2792,8 @@ def get_17live_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: Opt
     json_data = json.loads(json_str)
     live_status = json_data.get("status")
     if live_status and live_status == 2:
-        result["is_live"] = True
         flv_url = json_data['pullURLsInfo']['rtmpURLs'][0]['urlHighQuality']
-        result['flv_url'] = flv_url
-        result['record_url'] = flv_url
+        result |= {'is_live': True, 'flv_url': flv_url, 'record_url': flv_url}
     return result
 
 
@@ -2886,17 +2815,11 @@ def get_langlive_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: O
     live_info = json_data['data']['live_info']
     anchor_name = live_info['nickname']
     live_status = live_info['live_status']
-    result = {
-        "anchor_name": anchor_name,
-        "is_live": False,
-    }
+    result = {"anchor_name": anchor_name, "is_live": False}
     if live_status == 1:
-        result["is_live"] = True
         flv_url = json_data['data']['live_info']['liveurl']
         m3u8_url = json_data['data']['live_info']['liveurl_hls']
-        result['flv_url'] = flv_url
-        result['m3u8_url'] = m3u8_url
-        result['record_url'] = m3u8_url
+        result |= {'is_live': True, 'm3u8_url': m3u8_url, 'flv_url': flv_url, 'record_url': m3u8_url}
     return result
 
 
@@ -2929,14 +2852,10 @@ def get_pplive_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: Opt
     live_info = json_data['data']
     anchor_name = live_info['name']
     live_status = live_info['living']
-    result = {
-        "anchor_name": anchor_name,
-        "is_live": False,
-    }
+    result = {"anchor_name": anchor_name, "is_live": False}
     if live_status:
-        result["is_live"] = True
-        result['m3u8_url'] = live_info['pullUrl']
-        result['record_url'] = live_info['pullUrl']
+        m3u8_url = live_info['pullUrl']
+        result |= {'is_live': True, 'm3u8_url': m3u8_url, 'record_url': m3u8_url}
     return result
 
 
@@ -2969,15 +2888,11 @@ def get_6room_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: Opti
     json_data = json.loads(json_str)
     flv_title = json_data['content']['liveinfo']['flvtitle']
     anchor_name = json_data['content']['roominfo']['alias']
-    result = {
-        "anchor_name": anchor_name,
-        "is_live": False,
-    }
+    result = {"anchor_name": anchor_name, "is_live": False}
     if flv_title:
-        result["is_live"] = True
         flv_url = f'https://wlive.6rooms.com/httpflv/{flv_title}.flv'
-        result['flv_url'] = flv_url
-        result['record_url'] = get_req(flv_url, proxy_addr=proxy_addr, headers=headers, redirect_url=True)
+        record_url = get_req(flv_url, proxy_addr=proxy_addr, headers=headers, redirect_url=True)
+        result |= {'is_live': True, 'flv_url': flv_url, 'record_url': record_url}
     return result
 
 
@@ -3034,9 +2949,107 @@ def get_shopee_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: Opt
     result["anchor_name"] = anchor_name
     result['uid'] = f'uid={uid}&session={session_id}'
     if live_status == 1 and is_living:
-        result["is_live"] = True
         flv_url = json_data['data']['session']['play_url']
-        result['title'] = json_data['data']['session']['title']
-        result['flv_url'] = flv_url
-        result['record_url'] = flv_url
+        title = json_data['data']['session']['title']
+        result |= {'is_live': True, 'title': title, 'flv_url': flv_url, 'record_url': flv_url}
     return result
+
+
+@trace_error_decorator
+def get_youtube_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict:
+    headers = {
+        'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0',
+    }
+
+    if cookies:
+        headers['Cookie'] = cookies
+
+    html_str = get_req(url, proxy_addr=proxy_addr, headers=headers, abroad=True)
+    json_str = re.search('var ytInitialPlayerResponse = (.*?);var meta = document\\.createElement', html_str).group(1)
+    json_data = json.loads(json_str)
+    result = {"anchor_name": "", "is_live": False}
+    if 'videoDetails' not in json_data:
+        print("Error: Please log in to YouTube on your device's webpage and configure cookies in the config.ini")
+        return result
+    result['anchor_name'] = json_data['videoDetails']['author']
+    live_status = json_data['videoDetails'].get('isLive')
+    if live_status:
+        live_title = json_data['videoDetails']['title']
+        m3u8_url = json_data['streamingData']["hlsManifestUrl"]
+        play_url_list = get_play_url_list(m3u8_url, proxy=proxy_addr, header=headers, abroad=True)
+        result |= {"is_live": True, "title": live_title, "m3u8_url": m3u8_url, "play_url_list": play_url_list}
+    return result
+
+
+@trace_error_decorator
+def get_taobao_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict:
+    headers = {
+        'Referer': 'https://huodong.m.taobao.com/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0',
+        'Cookie': '',
+    }
+
+    if cookies:
+        headers['Cookie'] = cookies
+
+    if '_m_h5_tk' not in headers['Cookie']:
+        print('Error: Cookies is empty! please input correct cookies')
+
+    live_id = get_params(url, 'id')
+    if not live_id:
+        html_str = get_req(url, proxy_addr=proxy_addr, headers=headers)
+        redirect_url = re.findall("var url = '(.*?)';", html_str)[0]
+        live_id = get_params(redirect_url, 'id')
+
+    params = {
+        'jsv': '2.7.0',
+        'appKey': '12574478',
+        't': '1733104933120',
+        'sign': '',
+        'AntiFlood': 'true',
+        'AntiCreep': 'true',
+        'api': 'mtop.mediaplatform.live.livedetail',
+        'v': '4.0',
+        'preventFallback': 'true',
+        'type': 'jsonp',
+        'dataType': 'jsonp',
+        'callback': 'mtopjsonp1',
+        'data': '{"liveId":"' + live_id + '","creatorId":null}',
+    }
+
+    for i in range(2):
+        app_key = '12574478'
+        _m_h5_tk = re.findall('_m_h5_tk=(.*?);', headers['Cookie'])[0]
+        t13 = int(time.time() * 1000)
+        pre_sign_str = f'{_m_h5_tk.split("_")[0]}&{t13}&{app_key}&' + params['data']
+        sign = execjs.compile(open(f'{JS_SCRIPT_PATH}/taobao-sign.js').read()).call('sign', pre_sign_str)
+        params |= {'sign': sign, 't': t13}
+        api = f'https://h5api.m.taobao.com/h5/mtop.mediaplatform.live.livedetail/4.0/?{urllib.parse.urlencode(params)}'
+        proxies = {
+            'http': proxy_addr,
+            'https': proxy_addr
+        }
+        response = requests.get(api, proxies=proxies, headers=headers)
+        json_data = jsonp_to_json(response.text)
+        ret_msg = json_data['ret']
+        if ret_msg == ['SUCCESS::调用成功']:
+            anchor_name = json_data['data']['broadCaster']['accountName']
+            result = {"anchor_name": anchor_name, "is_live": False}
+            live_status = json_data['data']['streamStatus']
+            if live_status == '1':
+                live_title = json_data['data']['title']
+                play_url_list = json_data['data']['liveUrlList']
+                play_url_list = sorted(play_url_list, key=lambda x: int(x['codeLevel']), reverse=True)
+                result |= {"is_live": True, "title": live_title, "play_url_list": play_url_list, 'live_id': live_id}
+            return result
+        else:
+            print(f'Error: Taobao live data fetch failed, {ret_msg[0]}')
+
+        new_cookie = response.cookies.get_dict()
+        if '_m_h5_tk' in new_cookie and '_m_h5_tk_enc' in new_cookie:
+            headers['Cookie'] = re.sub('_m_h5_tk=(.*?);', new_cookie['_m_h5_tk'], headers['Cookie'])
+            headers['Cookie'] = re.sub('_m_h5_tk_enc=(.*?);', new_cookie['_m_h5_tk_enc'], headers['Cookie'])
+        else:
+            print('Error: Try to update cookie failed, please update the cookies in the configuration file')
+
